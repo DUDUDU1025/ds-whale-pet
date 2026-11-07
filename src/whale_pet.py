@@ -159,6 +159,16 @@ BOUNCE = 0.55             # 撞到屏幕边缘的速度保留比例
 FLY_FRICTION = 3.2        # 每秒衰减，越大停得越快（e^-3.2 ≈ 4%）
 FLY_STOP_SPEED = 40.0     # px/s，慢到这个程度就停
 
+# 被甩的时候说什么。分力度：轻甩 / 正常 / 用力
+THROW_LINES_LIGHT = ["咦？", "唔…", "别晃我啦", "等一下——"]
+THROW_LINES_NORMAL = ["飞起来啦！", "哇——", "我飞了我飞了"]
+THROW_LINES_HARD = ["啊啊啊啊——", "要吐了要吐了", "救命——", "太快了太快了"]
+BOUNCE_LINES = ["哎哟！", "撞到了…", "疼疼疼", "我的脑壳"]
+LAND_LINES = ["晕…", "眼冒金星…", "下次轻点", "还好我皮厚"]
+# 甩多了会递进：甩 3 次开始不耐烦，5 次以上真生气
+IMPATIENT_LINES = ["又甩…", "够了吧", "我头好晕", "你玩够了没"]
+ANGRY_LINES = ["你再甩我试试", "我生气了哦", "…讨厌", "不理你了"]
+
 # ================================================================ 官方 logo 曲线
 # 来源：deepseek-harness / packages/client/ui-primitives/src/BrandWordmark.tsx
 #       <g clipPath="url(#dsh-wordmark-whale-clip)"><path d="..."/>
@@ -734,6 +744,10 @@ class WhalePet:
         self._last_drag_pos = None
         self._last_drag_t = 0.0
         self._last_flight_t = 0.0
+        # 被甩的反应
+        self._throw_count = 0            # 30 秒内被甩了几次
+        self._throw_reset_at = 0.0
+        self._last_bounce_say = 0.0      # 撞边台词的节流
 
         self.root.geometry(f"{WIN}x{WIN}-60-120")
 
@@ -907,8 +921,31 @@ class WhalePet:
             self._flying = True
             self._fly_vel = self._drag_vel
             self._last_flight_t = time.time()
+            self._react_to_throw(speed)
         self._drag_vel = (0.0, 0.0)
         self._last_drag_pos = None
+
+    def _react_to_throw(self, speed):
+        """被甩出去的那一刻：按力度说句话，甩太多次就翻脸。"""
+        now = time.time()
+        # 30 秒一个窗口，过了就重新计数
+        if now > self._throw_reset_at:
+            self._throw_count = 0
+            self._throw_reset_at = now + 30.0
+        self._throw_count += 1
+
+        if self._throw_count >= 5:
+            # 甩第五次了，真生气
+            self._say(random.choice(ANGRY_LINES), 2.0)
+        elif self._throw_count >= 3:
+            # 第三、四次：开始不耐烦，但还没翻脸
+            self._say(random.choice(IMPATIENT_LINES), 1.6)
+        elif speed > 3000:
+            self._say(random.choice(THROW_LINES_HARD), 1.4)
+        elif speed > 1000:
+            self._say(random.choice(THROW_LINES_NORMAL), 1.4)
+        else:
+            self._say(random.choice(THROW_LINES_LIGHT), 1.2)
 
     def _virtual_screen(self):
         """整个虚拟桌面的范围（跨多显示器时的外接矩形）。"""
@@ -937,14 +974,20 @@ class WhalePet:
         nx, ny = x + vx * dt, y + vy * dt
 
         sx, sy, sw, sh = self._virtual_screen()
+        hit = False
         if nx < sx:
-            nx, vx = sx, -vx * BOUNCE
+            nx, vx, hit = sx, -vx * BOUNCE, True
         elif nx + WIN > sx + sw:
-            nx, vx = sx + sw - WIN, -vx * BOUNCE
+            nx, vx, hit = sx + sw - WIN, -vx * BOUNCE, True
         if ny < sy:
-            ny, vy = sy, -vy * BOUNCE
+            ny, vy, hit = sy, -vy * BOUNCE, True
         elif ny + WIN > sy + sh:
-            ny, vy = sy + sh - WIN, -vy * BOUNCE
+            ny, vy, hit = sy + sh - WIN, -vy * BOUNCE, True
+
+        # 撞墙了，喊一声（节流，免得贴着边撞出一串气泡）
+        if hit and now - self._last_bounce_say > 0.8:
+            self._last_bounce_say = now
+            self._say(random.choice(BOUNCE_LINES), 0.9)
 
         # 指数衰减：每秒乘 e^-FLY_FRICTION
         damp = math.exp(-FLY_FRICTION * dt)
@@ -955,6 +998,9 @@ class WhalePet:
             self._flying = False
             vx = vy = 0.0
             self.tilt = 0.0
+            # 落地报个到。刚翻过脸的就别再卖萌了
+            if self._throw_count < 3:
+                self._say(random.choice(LAND_LINES), 1.5)
         else:
             # 飞的时候顺着方向歪
             self.tilt = clamp(vx * 0.0015, -1.0, 1.0)
