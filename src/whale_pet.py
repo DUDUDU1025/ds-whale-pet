@@ -748,6 +748,7 @@ class WhalePet:
         self._throw_count = 0            # 30 秒内被甩了几次
         self._throw_reset_at = 0.0
         self._last_bounce_say = 0.0      # 撞边台词的节流
+        self._say_queue = []             # 待播的台词，避免后一句顶掉前一句
 
         self.root.geometry(f"{WIN}x{WIN}-60-120")
 
@@ -936,16 +937,16 @@ class WhalePet:
 
         if self._throw_count >= 5:
             # 甩第五次了，真生气
-            self._say(random.choice(ANGRY_LINES), 2.0)
+            self._say(random.choice(ANGRY_LINES), 2.6)
         elif self._throw_count >= 3:
             # 第三、四次：开始不耐烦，但还没翻脸
-            self._say(random.choice(IMPATIENT_LINES), 1.6)
+            self._say(random.choice(IMPATIENT_LINES), 2.2)
         elif speed > 3000:
-            self._say(random.choice(THROW_LINES_HARD), 1.4)
+            self._say(random.choice(THROW_LINES_HARD), 2.2)
         elif speed > 1000:
-            self._say(random.choice(THROW_LINES_NORMAL), 1.4)
+            self._say(random.choice(THROW_LINES_NORMAL), 2.0)
         else:
-            self._say(random.choice(THROW_LINES_LIGHT), 1.2)
+            self._say(random.choice(THROW_LINES_LIGHT), 1.8)
 
     def _virtual_screen(self):
         """整个虚拟桌面的范围（跨多显示器时的外接矩形）。"""
@@ -987,7 +988,7 @@ class WhalePet:
         # 撞墙了，喊一声（节流，免得贴着边撞出一串气泡）
         if hit and now - self._last_bounce_say > 0.8:
             self._last_bounce_say = now
-            self._say(random.choice(BOUNCE_LINES), 0.9)
+            self._say(random.choice(BOUNCE_LINES), 1.5)
 
         # 指数衰减：每秒乘 e^-FLY_FRICTION
         damp = math.exp(-FLY_FRICTION * dt)
@@ -1000,7 +1001,7 @@ class WhalePet:
             self.tilt = 0.0
             # 落地报个到。刚翻过脸的就别再卖萌了
             if self._throw_count < 3:
-                self._say(random.choice(LAND_LINES), 1.5)
+                self._say(random.choice(LAND_LINES), 2.0)
         else:
             # 飞的时候顺着方向歪
             self.tilt = clamp(vx * 0.0015, -1.0, 1.0)
@@ -1253,11 +1254,23 @@ class WhalePet:
         self._move_main(cx + dx / dist * step, cy + dy / dist * step)
         self.look = (clamp(dx / dist, -1, 1), clamp(dy / dist, -1, 1))
 
-    def _say(self, text, seconds=3.5):
-        """强制开口说一句（会顶掉当前气泡，并把随机说话的计时往后推）。"""
-        self.bubble_text = text
-        self.bubble_until = time.time() + seconds
-        self.next_bubble = time.time() + random.uniform(35, 80)
+    def _say(self, text, seconds=3.5, urgent=False):
+        """开口说一句。
+
+        默认不打断正在说的：当前气泡还没消失就先排队，挨个播完。
+        这样甩飞时「啊啊啊——」「哎哟！」「晕…」能一条条看到，
+        而不是被后一句直接顶掉。urgent=True 时无条件抢断。
+        """
+        now = time.time()
+        if urgent or now >= self.bubble_until:
+            self.bubble_text = text
+            self.bubble_until = now + seconds
+            self.next_bubble = now + random.uniform(35, 80)
+            return
+        # 排队，最多攒 3 句，多了丢最旧的，免得堆成一大串
+        self._say_queue.append((text, seconds))
+        if len(self._say_queue) > 3:
+            self._say_queue.pop(0)
 
     def _eat_fish(self):
         # 吃完就地待着，不再游回原位
@@ -1559,6 +1572,13 @@ class WhalePet:
             self.bubble_until = now + 3.2
             # 越亲近越爱说话
             self.next_bubble = now + random.uniform(35, 80) / (1.0 + (lv - 1) * 0.35)
+
+        # 排队的台词：上一句播完就接下一句
+        if now >= self.bubble_until and self._say_queue:
+            next_text, next_secs = self._say_queue.pop(0)
+            self.bubble_text = next_text
+            self.bubble_until = now + next_secs
+
         bubble = self.bubble_text if now < self.bubble_until else None
 
         # 喂鱼这条线
