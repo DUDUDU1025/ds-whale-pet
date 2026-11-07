@@ -606,22 +606,40 @@ def render_frame(t, skin, look=(0.0, 0.0), blink=False, bob=0.0, tilt=0.0,
         # 瞳孔用纯黑：深蓝描边色和幕布太接近，抠图时会被当成背景一起吃掉
         img.paste(Image.new("RGB", (size, size), (0, 0, 0)), (0, 0), pupil_mask)
 
-    # ---- 喷水（头顶冒一小股，先升后落）
+    # ---- 喷水（水柱带弧度，水珠喷出去再被重力拽下来）
     if spout > 0.02:
         sx, sy = point((12.6, 3.9))
-        # 用窗口像素而不是 zoom 缩放的量，否则水柱会伸到画布外面去
-        h = 26.0 * spout * S
+        h = 46.0 * spout * S
         col = (196, 230, 250)
+
         layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         ld = ImageDraw.Draw(layer)
-        width = max(2, int(S * 1.5))
-        ld.line([(sx, sy), (sx, sy - h)], fill=col + (205,), width=width)
-        # 顶部散开的小水珠
-        for ang in (-0.85, -0.42, 0.0, 0.42, 0.85):
-            ex = sx + math.sin(ang) * h * 0.5
-            ey = sy - h + math.cos(ang) * h * 0.22
-            r = max(1.4, S * 1.25 * spout)
-            ld.ellipse([ex - r, ey - r, ex + r, ey + r], fill=col + (185,))
+
+        # 水柱：一串小圆叠成水流，越往上越细越淡，带一点弧度（不是一根棍子）
+        seg = 16
+        for i in range(seg):
+            u = i / float(seg - 1)                 # 0 = 头顶，1 = 最高点
+            bend = math.sin(u * 1.5) * 12.0 * S * spout
+            px_ = sx + bend
+            py_ = sy - h * u
+            rr = max(1.8, (1.0 - u * 0.38) * S * 3.4 * (0.55 + spout * 0.45))
+            alpha = int(225 * (1.0 - u * 0.35))
+            ld.ellipse([px_ - rr, py_ - rr, px_ + rr, py_ + rr],
+                       fill=col + (alpha,))
+
+        # 顶部水珠：按抛物线飞出去，再用重力拽下来
+        for ang in (-1.00, -0.50, 0.0, 0.50, 1.00):
+            vx = math.sin(ang) * h * 0.40
+            vy = -h * 0.62
+            for k in range(3):
+                u = (k + 1) / 3.0 * spout          # 沿轨迹取 3 个位置
+                drop_x = sx + vx * u
+                drop_y = sy + vy * u + 34.0 * u * u * S * 0.5   # 重力项
+                rr = max(1.6, S * (3.2 - k * 0.7) * spout)
+                a = int(215 * (1.0 - k * 0.28))
+                ld.ellipse([drop_x - rr, drop_y - rr, drop_x + rr, drop_y + rr],
+                           fill=col + (a,))
+
         img.paste(layer, (0, 0), layer)
 
     # ---- 爱心
@@ -2019,13 +2037,13 @@ class WhalePet:
         elif self._flying and self.dragging:
             self._flying = False        # 飞行途中被抓住
 
-        # 喷水：隔一阵子喷 0.55 秒，睡熟了不喷
+        # 喷水：隔一阵子喷 0.9 秒，睡熟了不喷
         spout = 0.0
         if now < self.spout_until:
-            p = 1.0 - (self.spout_until - now) / 0.55
+            p = 1.0 - (self.spout_until - now) / 0.9
             spout = math.sin(clamp(p, 0.0, 1.0) * math.pi)
         elif now > self.next_spout and sleepy < 0.35 and not self.dragging:
-            self.spout_until = now + 0.55
+            self.spout_until = now + 0.9
             self.next_spout = now + random.uniform(9, 22)
             spout = math.sin(0.02 * math.pi)
 
