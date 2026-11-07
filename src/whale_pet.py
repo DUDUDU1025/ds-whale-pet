@@ -1267,9 +1267,9 @@ class WhalePet:
             self.bubble_until = now + seconds
             self.next_bubble = now + random.uniform(35, 80)
             return
-        # 排队，最多攒 3 句，多了丢最旧的，免得堆成一大串
+        # 排队，最多攒 2 句，多了丢最旧的，免得堆成一大串
         self._say_queue.append((text, seconds))
-        if len(self._say_queue) > 3:
+        if len(self._say_queue) > 2:
             self._say_queue.pop(0)
 
     def _eat_fish(self):
