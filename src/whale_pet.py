@@ -266,9 +266,10 @@ AI_OTHER_LINES = {
     ],
 }
 
-# AI 应用轮询：2 秒看一次，切过去 20 秒内不重复念叨
-AI_POLL_SEC = 2.0
-AI_SAY_COOLDOWN = 20.0
+# AI 应用轮询：1 秒看一次（2 秒太慢，切过去半天没反应），
+# 同一个 AI 8 秒内不重复念叨（20 秒太狠，切两次就吞掉一次）
+AI_POLL_SEC = 1.0
+AI_SAY_COOLDOWN = 8.0
 
 # 物理固定步长：所有按帧累加的量都按这个节奏推进，
 # 这样渲染帧率在 42fps / 12fps 之间切换时，动作速度不会跟着变。
@@ -958,6 +959,7 @@ class WhalePet:
 
         # 认出你在用哪个 AI：切换时才反应，不跟着它干活的状态做动作
         self.ai_app = None              # 当前检测到的 AI 名字
+        self._ai_key = None             # (名字, 窗口句柄)，用来判断"变没变"
         self._ai_next_poll = 0.0
         self._ai_last_say = 0.0         # 反应冷却
         self._sulk_until = 0.0          # 吃醋别扭到什么时候
@@ -1164,7 +1166,7 @@ class WhalePet:
 
     # ---------------------------------------------------------- 认出你在用哪个 AI
     def _detect_ai_app(self):
-        """看前台窗口是不是某个 AI 工具。返回 (名字, home/other) 或 None。"""
+        """看前台窗口是不是某个 AI 工具。返回 (名字, home/other, 窗口句柄) 或 None。"""
         if not HAS_WIN32:
             return None
         try:
@@ -1180,36 +1182,50 @@ class WhalePet:
             low = title.lower()
             for needle, name, kind in AI_SIGNATURES:
                 if needle in low or needle in title:
-                    return (name, kind)
+                    return (name, kind, hwnd)
         except Exception:
             pass
         return None
 
     def _poll_ai_app(self, now):
-        """每隔几秒看一眼前台有没有切到别的 AI，切了就反应一下。
+        """每 1 秒看一眼前台是不是某个 AI，换过去了就反应。
 
-        只在**换到另一个 AI** 的时候说一次，不跟着它干活的状态做动作：
-        睡觉、拖动、喂鱼的时候一律不检测，免得打断。
+        两个关键点（之前这里坑过）：
+        1. **睡着时也检测**。检测到 AI 是外部事件，不该算「用户没互动」，
+           否则它睡着 → 停止检测 → 永远不知道你在用 AI → 永远醒不过来。
+        2. **用「名字 + 窗口句柄」判断变没变**，不只是名字。
+           在同一个 AI 里换标签页、换窗口也算变化，反应更灵敏。
         """
         if now < self._ai_next_poll:
             return
         self._ai_next_poll = now + AI_POLL_SEC
 
-        # 睡着 / 被拖 / 在喂鱼：不检测，也不反应
         if self.dragging or self.fish_mode != "none":
-            return
-        if now - self.last_action > 25:
             return
 
         found = self._detect_ai_app()
         name = found[0] if found else None
-        if name == self.ai_app:
+        hwnd = found[2] if found else 0
+
+        sleeping = (now - self.last_action) > 25
+        # 睡着而且前台不是 AI：什么都不做，让它继续睡
+        if sleeping and not name:
             return
 
-        old = self.ai_app
+        key = (name, hwnd)
+        if key == self._ai_key:
+            return
+        self._ai_key = key
         self.ai_app = name
-        if name and name != old:
-            self._react_to_ai(name, found[1], now)
+
+        if not name:
+            return
+
+        if sleeping:
+            # 被 AI 的动静叫醒
+            self.last_action = now - 20
+            self._touch(hearts=1, jump=1.4)
+        self._react_to_ai(name, found[1], now)
 
     def _react_to_ai(self, name, kind, now):
         """切到某个 AI 了：自己家就得意，别家就吃醋。"""
