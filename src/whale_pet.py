@@ -153,6 +153,12 @@ TARGET_FRAME_MS = 24    # 约 42fps，比固定 33ms 顺一点，又不至于太
 IDLE_FRAME_MS = 80      # 约 12fps
 IDLE_AFTER_SEC = 15.0   # 多久没交互算「空闲」
 
+# 甩抛手感
+THROW_MIN_SPEED = 320.0   # px/s，松手时低于这个速度不算「甩」，原地停下
+BOUNCE = 0.55             # 撞到屏幕边缘的速度保留比例
+FLY_FRICTION = 3.2        # 每秒衰减，越大停得越快（e^-3.2 ≈ 4%）
+FLY_STOP_SPEED = 40.0     # px/s，慢到这个程度就停
+
 # ================================================================ 官方 logo 曲线
 # 来源：deepseek-harness / packages/client/ui-primitives/src/BrandWordmark.tsx
 #       <g clipPath="url(#dsh-wordmark-whale-clip)"><path d="..."/>
@@ -721,6 +727,14 @@ class WhalePet:
         self._pos_ready = False      # 窗口摆好之前不许把位置写进状态
         self._frame_ms = TARGET_FRAME_MS
 
+        # 甩抛：拖动时攒速度，松手超过阈值就飞出去，撞边回弹
+        self._flying = False
+        self._fly_vel = (0.0, 0.0)       # px/s
+        self._drag_vel = (0.0, 0.0)      # px/s，拖动中的瞬时速度
+        self._last_drag_pos = None
+        self._last_drag_t = 0.0
+        self._last_flight_t = 0.0
+
         self.root.geometry(f"{WIN}x{WIN}-60-120")
 
         self.hwnd = 0
@@ -850,6 +864,10 @@ class WhalePet:
             self._drop_fish()
             return
         self.dragging = True
+        self._flying = False          # 一把抓住，停止飞行
+        self._drag_vel = (0.0, 0.0)
+        self._last_drag_pos = None
+        self._last_drag_t = time.time()
         self.drag_off = (ev.x_root - self.root.winfo_x(), ev.y_root - self.root.winfo_y())
         self._touch(hearts=1)
 
@@ -861,6 +879,19 @@ class WhalePet:
         # 不让它被拖出屏幕——拖出去就再也点不着了
         x, y = self._clamp_to_screen(x, y, WIN, WIN)
         self.root.geometry(f"+{x}+{y}")
+
+        # 攒速度：用指数平滑，免得最后一帧手一抖主导结果
+        now = time.time()
+        if self._last_drag_pos is not None:
+            dt = now - self._last_drag_t
+            if dt > 0.001:
+                vx = (x - self._last_drag_pos[0]) / dt
+                vy = (y - self._last_drag_pos[1]) / dt
+                self._drag_vel = (self._drag_vel[0] * 0.55 + vx * 0.45,
+                                  self._drag_vel[1] * 0.55 + vy * 0.45)
+        self._last_drag_pos = (x, y)
+        self._last_drag_t = now
+
         # 拖着它走的时候朝移动方向歪过去
         dx = ev.x_root - self._last_x if hasattr(self, "_last_x") else 0
         self._last_x = ev.x_root
@@ -870,6 +901,66 @@ class WhalePet:
         self.dragging = False
         if hasattr(self, "_last_x"):
             del self._last_x
+        # 松手时够快就甩出去
+        speed = math.hypot(*self._drag_vel)
+        if speed > THROW_MIN_SPEED:
+            self._flying = True
+            self._fly_vel = self._drag_vel
+            self._last_flight_t = time.time()
+        self._drag_vel = (0.0, 0.0)
+        self._last_drag_pos = None
+
+    def _virtual_screen(self):
+        """整个虚拟桌面的范围（跨多显示器时的外接矩形）。"""
+        try:
+            u = ctypes.windll.user32
+            return (u.GetSystemMetrics(76), u.GetSystemMetrics(77),   # X, Y
+                    u.GetSystemMetrics(78), u.GetSystemMetrics(79))   # W, H
+        except Exception:
+            return (0, 0, WIN * 2, WIN * 2)
+
+    def _step_flight(self, now):
+        """甩出去之后的飞行：减速 + 撞边回弹，慢到一定程度自己停。"""
+        rc = self._win_rect()
+        if not rc:
+            self._flying = False
+            return
+        # 用真实时间差推进，卡顿时最多按 100ms 算，避免瞬移
+        dt = now - self._last_flight_t
+        if dt <= 0:
+            dt = 0.016
+        dt = min(dt, 0.1)
+        self._last_flight_t = now
+
+        x, y = rc[0], rc[1]
+        vx, vy = self._fly_vel
+        nx, ny = x + vx * dt, y + vy * dt
+
+        sx, sy, sw, sh = self._virtual_screen()
+        if nx < sx:
+            nx, vx = sx, -vx * BOUNCE
+        elif nx + WIN > sx + sw:
+            nx, vx = sx + sw - WIN, -vx * BOUNCE
+        if ny < sy:
+            ny, vy = sy, -vy * BOUNCE
+        elif ny + WIN > sy + sh:
+            ny, vy = sy + sh - WIN, -vy * BOUNCE
+
+        # 指数衰减：每秒乘 e^-FLY_FRICTION
+        damp = math.exp(-FLY_FRICTION * dt)
+        vx *= damp
+        vy *= damp
+
+        if math.hypot(vx, vy) < FLY_STOP_SPEED:
+            self._flying = False
+            vx = vy = 0.0
+            self.tilt = 0.0
+        else:
+            # 飞的时候顺着方向歪
+            self.tilt = clamp(vx * 0.0015, -1.0, 1.0)
+
+        self._fly_vel = (vx, vy)
+        self._move_main(nx, ny)
 
     def on_double(self, ev):
         self._touch(hearts=4, jump=3.6)
@@ -1448,8 +1539,14 @@ class WhalePet:
             self.bob_v = -self._jump_power
             self._next_jump_at = now + 0.10
 
-        # 拖动倾斜回正
-        if not self.dragging:
+        # 甩抛飞行（优先级最高：飞的时候别的位移都别掺和）
+        if self._flying and not self.dragging:
+            self._step_flight(now)
+        elif self._flying and self.dragging:
+            self._flying = False        # 飞行途中被抓住
+
+        # 拖动倾斜回正（飞行时由 _step_flight 自己控制倾斜）
+        if not self.dragging and not self._flying:
             self.tilt *= 0.90
 
         # 爱心
