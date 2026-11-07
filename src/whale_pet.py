@@ -274,6 +274,25 @@ AI_SAY_COOLDOWN = 20.0
 # 这样渲染帧率在 42fps / 12fps 之间切换时，动作速度不会跟着变。
 PHYS_STEP = 1.0 / 60.0
 
+# ================================================================ 睡→醒→潜水
+# 睡着满这么久会自己醒（不是被戳醒，是睡够了）
+SLEEP_TO_WAKE_SEC = 60.0
+# 自己醒过来之后，这么多秒没人碰它，就开始潜水
+WAKE_TO_DIVE_SEC = 30.0
+# 潜过一次的冷却，防止「醒→潜→浮起→又潜」变成永动机
+DIVE_COOLDOWN_SEC = 180.0
+# 一次潜水各阶段时长（秒）
+DIVE_DOWN_SEC = 1.5      # 下潜
+DIVE_HOLD_SEC = 1.8      # 沉在水下停一会儿
+DIVE_UP_SEC = 2.2        # 浮上来（比下潜慢，浮力是温和的）
+# 下潜深度 = 窗口高度的这个比例（沉出屏幕底部）
+DIVE_DEPTH_RATIO = 1.15
+
+# 睡醒 / 潜水 的台词
+AUTO_WAKE_LINES = ["……睡饱了", "唔…我醒了", "（伸懒腰）", "嗯？你还在啊"]
+DIVE_LINES = ["我下去看看", "去深一点的地方", "潜一下", "下面好安静"]
+SURFACE_LINES = ["上来了", "呼——", "水底下好黑", "我回来了"]
+
 # ================================================================ 官方 logo 曲线
 # 来源：deepseek-harness / packages/client/ui-primitives/src/BrandWordmark.tsx
 #       <g clipPath="url(#dsh-wordmark-whale-clip)"><path d="..."/>
@@ -885,6 +904,15 @@ class WhalePet:
         self._phys_acc = 0.0
         self._last_tick = time.time()
 
+        # 睡 → 自己醒 → 潜水
+        self._asleep_since = 0.0        # 从什么时候开始睡着的
+        self._self_woke_at = 0.0        # 上次「自己醒」是什么时候（0 = 没醒过）
+        self._last_dive_at = 0.0        # 上次潜水的时间（冷却用）
+        self.dive_phase = None          # None / "down" / "hold" / "up"
+        self._dive_t0 = 0.0
+        self._dive_from = (0, 0)        # 下潜前的位置
+        self._dive_depth = 0.0
+
         # 甩抛：拖动时攒速度，松手超过阈值就飞出去，撞边回弹
         self._flying = False
         self._fly_vel = (0.0, 0.0)       # px/s
@@ -1028,6 +1056,8 @@ class WhalePet:
             })
 
     def on_press(self, ev):
+        # 潜水时被点了：先从水里回来再说别的
+        self._cancel_dive()
         # 叼着鱼的时候点左键 = 把鱼放下，不拖动
         if self.fish_mode == "carrying":
             self._drop_fish()
@@ -1197,6 +1227,91 @@ class WhalePet:
         # 拖动倾斜回正（飞行时由 _step_flight 自己控制倾斜）
         if not self.dragging and not self._flying:
             self.tilt *= 0.90
+
+    # ---------------------------------------------------------- 睡 → 醒 → 潜水
+    def _update_sleep_dive(self, now, sleepy):
+        """睡着满 1 分钟自己醒；醒来 30 秒没人碰，就潜下去。"""
+        # 记录从什么时候开始睡的
+        if sleepy > 0.6:
+            if not self._asleep_since:
+                self._asleep_since = now
+        else:
+            self._asleep_since = 0.0
+
+        # 睡够了，自己醒（不是被戳醒的）
+        if self._asleep_since and now - self._asleep_since >= SLEEP_TO_WAKE_SEC:
+            self._asleep_since = 0.0
+            self._self_woke_at = now
+            # 把 last_action 往前拨一点，让它从「熟睡」退回「刚醒的迷糊」
+            self.last_action = now - 20
+            self._touch(hearts=2, jump=1.6)
+            self._say(random.choice(AUTO_WAKE_LINES), 2.2)
+
+        # 自己醒之后 30 秒没人碰 -> 潜水
+        if (self._self_woke_at and self.dive_phase is None
+                and now - self._self_woke_at >= WAKE_TO_DIVE_SEC
+                and now - self.last_action >= WAKE_TO_DIVE_SEC
+                and now - self._last_dive_at > DIVE_COOLDOWN_SEC):
+            self._start_dive(now)
+
+    def _start_dive(self, now):
+        rc = self._win_rect()
+        if not rc:
+            return
+        self._dive_from = (rc[0], rc[1])
+        self._dive_depth = WIN * DIVE_DEPTH_RATIO
+        self._dive_t0 = now
+        self.dive_phase = "down"
+        self._self_woke_at = 0.0
+        self._say(random.choice(DIVE_LINES), 1.6)
+
+    def _step_dive(self, now):
+        """潜水动画：加速下沉 -> 水下停一会儿 -> 慢慢浮上来。
+
+        下沉用 t² （重力，越落越快），上浮用 (1-t)²（浮力，越近水面越慢），
+        这样才像水里的东西，不是升降机。
+        """
+        if not self.dive_phase:
+            return
+        x0, y0 = self._dive_from
+        depth = self._dive_depth
+        el = now - self._dive_t0
+
+        if self.dive_phase == "down":
+            p = clamp(el / DIVE_DOWN_SEC, 0.0, 1.0)
+            self._move_main(x0, y0 + depth * p * p)     # 加速下沉
+            self.tilt = -0.85                            # 头朝下
+            if p >= 1.0:
+                self.dive_phase = "hold"
+                self._dive_t0 = now
+        elif self.dive_phase == "hold":
+            # 沉在下面，身体随水轻轻晃
+            self._move_main(x0, y0 + depth)
+            self.tilt = -0.30 + math.sin(now * 2.2) * 0.28
+            if el >= DIVE_HOLD_SEC:
+                self.dive_phase = "up"
+                self._dive_t0 = now
+        elif self.dive_phase == "up":
+            p = clamp(el / DIVE_UP_SEC, 0.0, 1.0)
+            self._move_main(x0, y0 + depth * (1.0 - p) * (1.0 - p))   # 减速上浮
+            self.tilt = 0.40 * math.sin(p * math.pi)     # 仰头
+            if p >= 1.0:
+                self.dive_phase = None
+                self._move_main(x0, y0)
+                self.tilt = 0.0
+                self._last_dive_at = now
+                self._touch(hearts=2, jump=1.4)
+                self._say(random.choice(SURFACE_LINES), 2.0)
+
+    def _cancel_dive(self):
+        """用户碰它了：立刻从水里回来，不硬撑着把动画放完。"""
+        if not self.dive_phase:
+            return
+        self.dive_phase = None
+        self._last_dive_at = time.time()
+        self.tilt = 0.0
+        x0, y0 = self._dive_from
+        self._move_main(x0, y0)
 
     def _virtual_screen(self):
         """整个虚拟桌面的范围（跨多显示器时的外接矩形）。"""
@@ -1398,6 +1513,7 @@ class WhalePet:
 
     def start_carrying(self):
         """点了「喂一条小鱼」：鱼叼到鼠标上，点左键放下。"""
+        self._cancel_dive()
         if self.fish_mode != "none":
             return
         self.fish_mode = "carrying"
@@ -1656,6 +1772,9 @@ class WhalePet:
         """两个自愈：窗口被隐藏就冒出来；被拖到屏幕外就拽回来。"""
         if self._hidden_fs or not self.hwnd:
             return
+        # 潜水时窗口故意沉到屏幕外，别把它拽回来
+        if self.dive_phase:
+            return
         try:
             u = ctypes.windll.user32
             if not u.IsWindowVisible(self.hwnd):
@@ -1821,6 +1940,22 @@ class WhalePet:
         if sleepy > 0.6:
             self.look = (0.0, 0.0)
             blink = True
+
+        # 睡够了自己醒；醒来一直没人理就潜水
+        self._update_sleep_dive(now, sleepy)
+        self._step_dive(now)
+        if self.dive_phase:
+            # 潜水期间：不做别的动作，专心往下游
+            self._frame_ms = TARGET_FRAME_MS
+            img = render_frame(
+                t, SKINS[self.skin_idx], (0.0, 0.35), False,
+                bob=0.0, tilt=self.tilt, hover=0.0,
+                mood="idle", hearts=None, bubble=None, zzz=0.0,
+                squash=0.0, tail_extra=1.15, spout=0.0)
+            self.photo = ImageTk.PhotoImage(img)
+            self.label.configure(image=self.photo)
+            self._tick_n += 1
+            return
 
         # 饿了三分钟会自己开口
         if (not self._hungry_said and self.fish_mode == "none"
