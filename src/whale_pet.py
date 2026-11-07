@@ -751,6 +751,9 @@ SESSION_LINES = [
 
 # ================================================================ 小鱼
 FISH_W, FISH_H = 46, 34
+# 鱼相对光标的固定偏移（左上角）。跟随时和放下时必须用同一个值，
+# 否则一松手鱼会从光标右下"跳"到光标中心，看着就像放偏了。
+FISH_OFFSET_X, FISH_OFFSET_Y = 18, 14
 
 
 def render_fish(t, scared=False):
@@ -988,7 +991,7 @@ class WhalePet:
 
     def _refresh_menu(self):
         name, _ = self.bond_level()
-        label = (f"认识 {int(self.days_known())} 天 · "
+        label = (f"认识 {self.day_number()} 天 · "
                  f"摸头 {self.state['pets']} 次 · {name}")
         try:
             self.menu.entryconfigure(0, label=label)
@@ -1261,6 +1264,15 @@ class WhalePet:
     def days_known(self):
         return max(0.0, (time.time() - self.state["first_met"]) / 86400.0)
 
+    def day_number(self):
+        """给人看的「第几天」。
+
+        刚认识那天就算第 1 天，不是第 0 天——没人会说「我们认识 0 天」。
+        注意 days_known() 不能改，好感度是按实际经过的天数算的，
+        这里只是显示用的偏移。
+        """
+        return int(self.days_known()) + 1
+
     def bond_level(self):
         a = self.affection
         if a >= 60:
@@ -1411,7 +1423,7 @@ class WhalePet:
 
         # 全部用物理屏幕坐标，免得 DPI 缩放把 Tk 的逻辑坐标和窗口位置错开
         mx, my = self._cursor_pos()
-        self._move_fish_win(mx + 18, my + 14)
+        self._move_fish_win(mx + FISH_OFFSET_X, my + FISH_OFFSET_Y)
 
         # 尾巴甩起来（左键按住时它会受惊）
         pressed = self._lbutton_pressed()
@@ -1440,11 +1452,14 @@ class WhalePet:
         if self.fish_mode != "carrying":
             return
         mx, my = self._cursor_pos()
-        self.fish_pos = (mx, my)
+        # 鱼的中心（鲸鱼要游到这个点来吃）
+        self.fish_pos = (mx + FISH_OFFSET_X + FISH_W // 2,
+                         my + FISH_OFFSET_Y + FISH_H // 2)
         rc = self._win_rect()
         self.fish_mode = "swimming"
-        # 鱼留在落点
-        self._move_fish_win(mx - FISH_W // 2, my - FISH_H // 2)
+        # 鱼就停在跟随时的那个位置——不能用「中心对准光标」，
+        # 否则松手那一瞬间鱼会往左上跳 41×31 像素，看着像放偏了。
+        self._move_fish_win(mx + FISH_OFFSET_X, my + FISH_OFFSET_Y)
 
     def _swim_step(self):
         if self.fish_mode != "swimming" or not self.fish_pos:
@@ -1769,7 +1784,7 @@ class WhalePet:
                 lines = ["要记得喝水呀", "我在呢", "今天也辛苦啦", "这个 bug 会修好的",
                          "歇一会儿吧", "别熬太晚啦", "嗯…我在想事情"]
                 if d >= 1:
-                    lines.append("我们认识 %d 天啦" % int(d))
+                    lines.append("我们认识 %d 天啦" % self.day_number())
                 if lv >= 3:
                     lines += ["今天也想多看你一会儿", "你在的时候我就不乱动"]
                 elif lv <= 1:
