@@ -631,27 +631,63 @@ def render_frame(t, skin, look=(0.0, 0.0), blink=False, bob=0.0, tilt=0.0,
                 ld.text((zx, zy), "z", font=f, fill=(196, 214, 252, a))
         img.paste(layer, (0, 0), layer)
 
-    # ---- 说话气泡
+    # ---- 说话气泡（长句自动折行，实在放不下再缩字号）
     if bubble:
-        f = font_at(size * 0.072)
+        probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+        max_w = size * 0.90          # 气泡最多占画布九成宽
+        fsize = size * 0.068
+        f = font_at(fsize)
+
+        def text_w(s):
+            try:
+                return probe.textlength(s, font=f) if f else len(s) * fsize
+            except Exception:
+                return len(s) * fsize
+
+        lines = [bubble]
+        # 一行塞不下：优先在标点处断开，找不到标点就从中间切
+        if text_w(bubble) > max_w:
+            cut = -1
+            for sep in ("…", "，", "、", "（", " "):
+                idx = bubble.rfind(sep)
+                if 2 < idx < len(bubble) - 1:
+                    cut = idx + len(sep)
+                    break
+            if cut > 0:
+                lines = [bubble[:cut], bubble[cut:]]
+            else:
+                mid = max(1, len(bubble) // 2)
+                lines = [bubble[:mid], bubble[mid:]]
+
+        # 折行后还是太宽，就一路缩字号，直到塞得下
+        widest = max(text_w(s) for s in lines)
+        while widest > max_w and fsize > size * 0.040:
+            fsize *= 0.93
+            f = font_at(fsize)
+            widest = max(text_w(s) for s in lines)
+
+        bw = min(widest + size * 0.13, size)
+        line_h = fsize * 1.30
+        bh = line_h * len(lines) + size * 0.055
+        bx, by = size * 0.5, size * 0.055
+
         layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         ld = ImageDraw.Draw(layer)
-        try:
-            tw = ld.textlength(bubble, font=f) if f else len(bubble) * size * 0.04
-        except Exception:
-            tw = len(bubble) * size * 0.04
-        bw = tw + size * 0.14
-        bh = size * 0.135
-        bx, by = size * 0.5, size * 0.085
         ld.rounded_rectangle([bx - bw / 2, by, bx + bw / 2, by + bh],
-                             radius=bh / 2, fill=(240, 247, 255, 236))
+                             radius=min(bh / 2, size * 0.05),
+                             fill=(240, 247, 255, 236))
         ld.polygon([(bx - size * 0.03, by + bh - 2),
-                    (bx, by + bh + size * 0.045),
-                    (bx + size * 0.03, by + bh - 2)], fill=(240, 247, 255, 236))
+                    (bx, by + bh + size * 0.04),
+                    (bx + size * 0.03, by + bh - 2)],
+                   fill=(240, 247, 255, 236))
         img.paste(layer, (0, 0), layer)
+
         if f is not None:
-            ImageDraw.Draw(img).text((bx, by + bh / 2), bubble,
-                                     font=f, fill=(28, 38, 66), anchor="mm")
+            d = ImageDraw.Draw(img)
+            ty = by + size * 0.026
+            for line in lines:
+                d.text((bx, ty), line, font=f, fill=(28, 38, 66), anchor="ma")
+                ty += line_h
 
     # ---- 缩回目标尺寸 + 抠幕布
     img = img.resize((WIN, WIN), Image.LANCZOS)
