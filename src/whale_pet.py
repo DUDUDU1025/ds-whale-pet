@@ -93,8 +93,14 @@ def load_state():
         if not isinstance(s, dict):
             raise ValueError("状态文件不是对象")
         return s
+    except FileNotFoundError:
+        # 第一次运行，状态文件本来就还没有。这是正常情况，不是错误。
+        now = time.time()
+        return {"first_met": now, "pets": 0, "feeds": 0,
+                "total_seconds": 0.0, "last_seen": now}
     except Exception as exc:
-        # 文件坏了别无声无息抹掉记忆：先留一份残骸，再记一笔日志
+        # 文件存在但读不出来（格式坏了、写了一半、手动改错）：
+        # 别无声无息抹掉记忆，先留一份残骸，再记一笔日志
         try:
             if os.path.exists(STATE_FILE):
                 bak = STATE_FILE + ".broken-" + time.strftime("%Y%m%d-%H%M%S")
