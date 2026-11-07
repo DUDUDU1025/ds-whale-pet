@@ -1,0 +1,25 @@
+# 运行时状态
+.whale_state.json
+whale_pet_error.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 本机快捷方式（路径写死，换机器就失效）
+*.lnk
+
+# 运行时数据（状态、日志）
+data/
