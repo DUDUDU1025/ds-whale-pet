@@ -1051,8 +1051,8 @@ class WhalePet:
         self.fish_win = None
         self.fish_label = None
         self.fish_photo = None
-        self._lbtn_down = False
         self._carry_ready_at = 0.0
+        self._lbtn_prev = True     # 上一帧左键状态，做边沿检测
         self._pos_ready = False      # 窗口摆好之前不许把位置写进状态
         self._frame_ms = TARGET_FRAME_MS
         # 物理固定步长累加器
@@ -1645,13 +1645,31 @@ class WhalePet:
         self._save_state()
 
     # ---------------------------------------------------------- 喂鱼
-    def _lbutton_pressed(self):
+    def _lbutton_state(self):
+        """一次读回左键的 (此刻按着, 自上次以来按过)。
+
+        **必须只调一次 GetAsyncKeyState。** 低位会被任何一次调用清掉。
+
+        返回值是 16 位的 SHORT：0x8001 表示「此刻按着且刚按过」。
+        ctypes 默认按 32 位 int 读，可能读到 0x00008001（正数）——
+        那样 v & 0x8000 就成了 0，高位判断直接失效。
+        所以这里显式把 restype 声明成 c_short，并且先做一次
+        & 0xFFFF 归一化，两种扩展方式都能正确判断。
+        """
         if not HAS_WIN32:
-            return False
+            return (False, False)
         try:
-            return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
+            fn = ctypes.windll.user32.GetAsyncKeyState
+            fn.restype = ctypes.c_short
+            fn.argtypes = [ctypes.c_int]
+            v = fn(0x01) & 0xFFFF          # 归一化成 16 位无符号
+            return (bool(v & 0x8000), bool(v & 0x0001))
         except Exception:
-            return False
+            return (False, False)
+
+    def _lbutton_pressed(self):
+        """左键此刻是不是按着。只关心高位时用它。"""
+        return self._lbutton_state()[0]
 
     def _cursor_pos(self):
         """鼠标的物理屏幕坐标（Tk 的 winfo_pointer* 在 DPI 缩放下会漂）。"""
@@ -1691,18 +1709,50 @@ class WhalePet:
         except tk.TclError:
             pass
 
+    def _set_fish_clickable(self, on):
+        """鱼窗口要不要接收鼠标点击。
+
+        叼着鱼的时候**必须**接收：不然点左键的事件全被穿透到桌面，
+        程序这边只能靠 GetAsyncKeyState 去猜，而那是键盘记录器的典型 API，
+        安全软件（实测是火绒）可能直接把它拦成 0，表现就是「点左键没反应」。
+
+        让鱼窗口自己收 <Button-1> 就完全绕开了按键 API ——
+        Tk 的事件队列不受安全软件影响。
+        """
+        if not HAS_WIN32 or self.fish_win is None:
+            return
+        try:
+            u = ctypes.windll.user32
+            hwnd = int(self.fish_win.wm_frame(), 16)
+            ex = u.GetWindowLongW(hwnd, -20)
+            if on:
+                ex &= ~0x00000020          # 去掉 WS_EX_TRANSPARENT
+            else:
+                ex |= 0x00000020           # 加上穿透
+            u.SetWindowLongW(hwnd, -20, ex)
+        except Exception:
+            pass
+
     def start_carrying(self):
         """点了「喂一条小鱼」：鱼叼到鼠标上，点左键放下。"""
         self._cancel_dive()
         if self.fish_mode != "none":
             return
         self.fish_mode = "carrying"
-        # 菜单那一下左键可能还按着，先记下真实状态，等它松开才算「放下」
-        self._lbtn_down = self._lbutton_pressed()
+        self._lbtn_prev = True          # 点菜单那下左键按着，先当它按着
         self._carry_ready_at = time.time() + 0.35
         self._ensure_fish_window()
+        self._set_fish_clickable(True)  # 叼鱼期间鱼要能被点到
         self._touch(hearts=1)
         self.last_action = time.time()
+
+    def _on_fish_click(self, ev=None):
+        """鱼窗口被点了一下 = 放下鱼。"""
+        if self.fish_mode != "carrying":
+            return
+        if time.time() < self._carry_ready_at:
+            return                      # 菜单那一下的点，忽略
+        self._drop_fish()
 
     def _ensure_fish_window(self):
         if self.fish_win is not None:
@@ -1723,8 +1773,11 @@ class WhalePet:
             w.update_idletasks()
             w.geometry(f"{FISH_W}x{FISH_H}+0+0")
 
-            # 鼠标穿透：鱼只是跟着指针看，不挡点击。
-            # wm_frame() 才是这个 Toplevel 真正的顶层 HWND。
+            # 点鱼 = 放下。这条路径比轮询按键可靠得多。
+            lbl.bind("<Button-1>", self._on_fish_click)
+            w.bind("<Button-1>", self._on_fish_click)
+
+            # 默认先设成穿透；叼鱼时 start_carrying 会把它改成可点
             if HAS_WIN32:
                 try:
                     u = ctypes.windll.user32
@@ -1758,8 +1811,11 @@ class WhalePet:
         mx, my = self._cursor_pos()
         self._move_fish_win(mx + FISH_OFFSET_X, my + FISH_OFFSET_Y)
 
+        # 只读一次按键状态，同时拿高位（此刻按着）和低位（自上次以来按过）。
+        # 分两次读会互相干扰：低位被第一次调用清零，第二次就读不到了。
+        pressed, clicked = self._lbutton_state()
+
         # 尾巴甩起来（左键按住时它会受惊）
-        pressed = self._lbutton_pressed()
         try:
             img = render_fish(t, scared=pressed)
             self.fish_photo = ImageTk.PhotoImage(img)
@@ -1775,11 +1831,23 @@ class WhalePet:
             dist = max(1.0, math.hypot(dx, dy))
             self.look = (clamp(dx / dist, -1, 1), clamp(dy / dist, -1, 1))
 
-        # 左键一按下就把鱼放下（不等松开）。轮询是按帧采样的，
-        # 等“按下→松开”一个完整周期的话，手点快一点就会整个漏过去。
-        if now >= self._carry_ready_at and pressed and not self._lbtn_down:
-            self._lbtn_down = True
-            self._drop_fish()
+        # ---- 左键放下鱼：高位 + 边沿检测 ----
+        #
+        # 为什么不用低位（0x0001「自上次以来按过」）：
+        #   GetAsyncKeyState 的低位会被**任何一次**调用清掉，
+        #   程序里多处读按键时它随时可能被别处清空，实测读不到。
+        #
+        # 改看高位（0x8000「此刻按着」）做边沿：只要某一帧读到按着就触发。
+        # 人真实点击一般 100ms 以上，42fps 下能覆盖 4 帧，不会漏。
+        # 唯一漏的情况是「按下到松开不足一帧」（<24ms），那种快速点击本来就少见。
+        #
+        # 菜单隔离：点「喂一条小鱼」那一下左键必然按着，所以
+        # _carry_ready_at 之前不判断，免得菜单那下被当成放下。
+        if now >= self._carry_ready_at:
+            if pressed and not self._lbtn_prev:
+                self._drop_fish()
+                return
+        self._lbtn_prev = pressed
 
     def _drop_fish(self):
         if self.fish_mode != "carrying":
@@ -1790,6 +1858,7 @@ class WhalePet:
                          my + FISH_OFFSET_Y + FISH_H // 2)
         rc = self._win_rect()
         self.fish_mode = "swimming"
+        self._set_fish_clickable(False)   # 放下了，鱼不再挡点击
         # 鱼就停在跟随时的那个位置——不能用「中心对准光标」，
         # 否则松手那一瞬间鱼会往左上跳 41×31 像素，看着像放偏了。
         self._move_fish_win(mx + FISH_OFFSET_X, my + FISH_OFFSET_Y)
@@ -2305,11 +2374,20 @@ if __name__ == "__main__":
     if "--preview" in sys.argv:
         preview()
     else:
+        # 启动时就写一行，用来确认 _log_error 在打包后还能正常工作。
+        # 如果连这行都看不到，说明日志本身有问题（路径、权限），
+        # 那样后面所有诊断都白费。
+        _log_error("[boot] pid=%s frozen=%s HAS_WIN32=%s\n"
+                   "[boot] ROOT=%s\n[boot] DATA_DIR=%s\n"
+                   % (os.getpid(), getattr(sys, "frozen", False), HAS_WIN32,
+                      ROOT, DATA_DIR))
         _MUTEX = _acquire_single_instance()
         if _MUTEX is None:
             # 已经有一只了（比如开机自启 + 手动点了图标），这次就安静地退出
+            _log_error("[boot] 已有实例在跑，本次退出\n")
             sys.exit(0)
         try:
+            _log_error("[boot] 创建 WhalePet\n")
             WhalePet().run()
         except Exception:
             # pythonw 没有控制台，崩溃信息写进日志，不然什么都看不到
