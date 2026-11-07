@@ -270,6 +270,10 @@ AI_OTHER_LINES = {
 AI_POLL_SEC = 2.0
 AI_SAY_COOLDOWN = 20.0
 
+# 物理固定步长：所有按帧累加的量都按这个节奏推进，
+# 这样渲染帧率在 42fps / 12fps 之间切换时，动作速度不会跟着变。
+PHYS_STEP = 1.0 / 60.0
+
 # ================================================================ 官方 logo 曲线
 # 来源：deepseek-harness / packages/client/ui-primitives/src/BrandWordmark.tsx
 #       <g clipPath="url(#dsh-wordmark-whale-clip)"><path d="..."/>
@@ -877,6 +881,9 @@ class WhalePet:
         self._carry_ready_at = 0.0
         self._pos_ready = False      # 窗口摆好之前不许把位置写进状态
         self._frame_ms = TARGET_FRAME_MS
+        # 物理固定步长累加器
+        self._phys_acc = 0.0
+        self._last_tick = time.time()
 
         # 甩抛：拖动时攒速度，松手超过阈值就飞出去，撞边回弹
         self._flying = False
@@ -1161,6 +1168,35 @@ class WhalePet:
             self._say(random.choice(lines), 2.8)
             self.tilt = -0.45
             self._sulk_until = now + 3.0     # 别扭一会儿
+
+    def _step_physics(self):
+        """按固定步长推进一次物理。
+
+        跳跃、爱心、悬停、倾斜这些都是「每步变多少」的量，
+        以前直接写在渲染循环里，帧率一变速度就跟着变
+        （42fps 和 12fps 差 3.5 倍）。现在统一由这里按 60Hz 推进。
+        """
+        # 跳跃
+        if self.bob < 0 or self.bob_v < 0:
+            self.bob += self.bob_v
+            self.bob_v += 0.42
+            if self.bob >= 0:
+                self.bob = 0.0
+                self.bob_v = 0.0
+
+        # 爱心上浮与消散
+        for h in self.hearts:
+            h["dy"] -= h["v"]
+            h["life"] -= 0.011
+        if self.hearts:
+            self.hearts = [h for h in self.hearts if h["life"] > 0]
+
+        # 悬停渐变
+        self.hover += (self.hover_target - self.hover) * 0.18
+
+        # 拖动倾斜回正（飞行时由 _step_flight 自己控制倾斜）
+        if not self.dragging and not self._flying:
+            self.tilt *= 0.90
 
     def _virtual_screen(self):
         """整个虚拟桌面的范围（跨多显示器时的外接矩形）。"""
@@ -1749,10 +1785,30 @@ class WhalePet:
         t = now - self.t0
         idle = now - self.last_action
 
+        # 因为全屏程序躲起来了：不渲染、不做任何动画，
+        # 只保留「全屏是不是结束了」的检测，不然它永远回不来。
+        if self._hidden_fs:
+            if self._tick_n % 30 == 0:
+                self._check_fullscreen()
+            self._tick_n += 1
+            return
+
         # 空闲降帧：没人理的时候不用烧 42fps，12fps 看不出区别
         busy = (idle < IDLE_AFTER_SEC or self.dragging
                 or self.fish_mode != "none" or self.hearts)
         self._frame_ms = TARGET_FRAME_MS if busy else IDLE_FRAME_MS
+
+        # 所有按帧推进的量（跳跃、爱心、悬停、倾斜）统一走固定 60Hz 步长，
+        # 这样 42fps 和 12fps 下物理速度完全一致。
+        self._phys_acc += now - self._last_tick
+        self._last_tick = now
+        if self._phys_acc > 0.5:
+            self._phys_acc = 0.5          # 长时间挂起后别一次补太多
+        steps = 0
+        while self._phys_acc >= PHYS_STEP and steps < 30:
+            self._phys_acc -= PHYS_STEP
+            self._step_physics()
+            steps += 1
 
         # 眨眼
         if now > self.next_blink:
@@ -1813,16 +1869,7 @@ class WhalePet:
         elif self.fish_mode == "swimming":
             self._swim_step()
 
-        # 悬停渐变
-        self.hover += (self.hover_target - self.hover) * 0.18
-
-        # 弹跳
-        if self.bob < 0 or self.bob_v < 0:
-            self.bob += self.bob_v
-            self.bob_v += 0.42
-            if self.bob >= 0:
-                self.bob = 0.0
-                self.bob_v = 0.0
+        # 悬停渐变、跳跃、爱心、倾斜回正都在 _step_physics 里按固定 60Hz 推进
 
         # 连跳：落地后如果还有余量，隔一小会儿再蹦一下
         if (self._jumps_left > 0 and self.bob == 0.0 and self.bob_v == 0.0
@@ -1836,16 +1883,6 @@ class WhalePet:
             self._step_flight(now)
         elif self._flying and self.dragging:
             self._flying = False        # 飞行途中被抓住
-
-        # 拖动倾斜回正（飞行时由 _step_flight 自己控制倾斜）
-        if not self.dragging and not self._flying:
-            self.tilt *= 0.90
-
-        # 爱心
-        for h in self.hearts:
-            h["dy"] -= h["v"]
-            h["life"] -= 0.011
-        self.hearts = [h for h in self.hearts if h["life"] > 0]
 
         # 喷水：隔一阵子喷 0.55 秒，睡熟了不喷
         spout = 0.0
