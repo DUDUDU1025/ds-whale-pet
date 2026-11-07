@@ -928,6 +928,12 @@ SESSION_LINES = [
 
 # ================================================================ 小鱼
 FISH_W, FISH_H = 46, 34
+# 鱼放下后先待这么久，鲸鱼才动身。不然鱼在远处时三秒内就被吃干净，
+# 看着像"放不下"——其实是被吃了。
+FISH_SETTLE_SEC = 2.5
+# 游过去吃鱼的速度（像素/秒）。以前是每帧 14px，42fps 下约 588px/s，
+# 从屏幕这头到那头只要三秒，快得像瞬移。260 大约 7 秒游完全程。
+FISH_SWIM_SPEED = 260.0
 # 鱼相对光标的偏移（左上角）。负半个宽高 = 鱼的中心正好压在光标箭头上。
 # 跟随时和放下时必须用同一个值，否则一松手鱼会跳位置。
 # 系统光标永远画在所有窗口之上，所以鱼在光标下面、箭头压着鱼——不用特殊处理。
@@ -1051,6 +1057,7 @@ class WhalePet:
         self.fish_win = None
         self.fish_label = None
         self.fish_photo = None
+        self._fish_settle_until = 0.0    # 鱼放下后先待一会儿，别立刻被吃
         self._lbtn_down = False
         self._carry_ready_at = 0.0
         self._pos_ready = False      # 窗口摆好之前不许把位置写进状态
@@ -1790,12 +1797,19 @@ class WhalePet:
                          my + FISH_OFFSET_Y + FISH_H // 2)
         rc = self._win_rect()
         self.fish_mode = "swimming"
+        # 鱼先在那儿待一会儿，鲸鱼过几秒才动身。
+        # 之前是放下就开始游，鱼在远处时 3 秒内就被吃干净了，
+        # 看着像"放不下"—— 其实是被吃了。
+        self._fish_settle_until = time.time() + FISH_SETTLE_SEC
         # 鱼就停在跟随时的那个位置——不能用「中心对准光标」，
         # 否则松手那一瞬间鱼会往左上跳 41×31 像素，看着像放偏了。
         self._move_fish_win(mx + FISH_OFFSET_X, my + FISH_OFFSET_Y)
 
-    def _swim_step(self):
+    def _swim_step(self, now=None):
         if self.fish_mode != "swimming" or not self.fish_pos:
+            return
+        # 鱼刚放下：先让它躺在那儿，鲸鱼过一会儿才反应过来
+        if now is not None and now < self._fish_settle_until:
             return
         rc = self._win_rect()
         if not rc:
@@ -1808,7 +1822,9 @@ class WhalePet:
         if dist < 16:
             self._eat_fish()
             return
-        step = min(dist, 14)
+        # 游过去的速度。以前是每帧 14px（42fps 下约 588px/s），
+        # 从屏幕一头游到另一头只要三秒，太快了像瞬移。
+        step = min(dist, FISH_SWIM_SPEED / 42.0)
         self._move_main(cx + dx / dist * step, cy + dy / dist * step)
         self.look = (clamp(dx / dist, -1, 1), clamp(dy / dist, -1, 1))
 
@@ -2186,7 +2202,7 @@ class WhalePet:
         if self.fish_mode == "carrying":
             self._update_carrying(now, t)
         elif self.fish_mode == "swimming":
-            self._swim_step()
+            self._swim_step(now)
 
         # 悬停渐变、跳跃、爱心、倾斜回正都在 _step_physics 里按固定 60Hz 推进
 
