@@ -54,12 +54,17 @@ except Exception:
 
 # ---------------------------------------------------------------- 记忆
 # 它记得你们认识多久、被摸过几次、一起待了多久。
-# 代码在 src/ 下，状态和日志统一放到项目根的 data/ 里
-_HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(_HERE)
+#
+# 打包成 exe 之后 __file__ 会指向 PyInstaller 的临时解压目录，
+# 拿它当根目录的话，每次启动数据都写到一个新的临时目录里，
+# 关掉就没了 —— 认识天数会永远停在 1。所以冻结状态下要用 exe 的位置。
+if getattr(sys, "frozen", False):
+    ROOT = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    ROOT = os.path.dirname(_HERE)
 DATA_DIR = os.path.join(ROOT, "data")
 STATE_FILE = os.path.join(DATA_DIR, ".whale_state.json")
-
 
 def _log_error(text):
     """往 data/whale_pet_error.log 追加。
@@ -1670,14 +1675,19 @@ class WhalePet:
     def _move_fish_win(self, x, y):
         """把小鱼窗口挪到屏幕坐标。
 
-        注意：Tk 给 Toplevel 的 wrapper 句柄不吃 SetWindowPos
-        （会返回 ERROR_INVALID_WINDOW_HANDLE），只能走 geometry。
-        好在这台机器上 Tk 坐标和 GetCursorPos 完全一致，所以直接用。
+        注意两件事：
+        1. Tk 给 Toplevel 的 wrapper 句柄不吃 SetWindowPos
+           （会返回 ERROR_INVALID_WINDOW_HANDLE），只能走 geometry。
+        2. **geometry 里的 "-23" 表示「距屏幕右边 23」，不是负坐标。**
+           算出负数再拼成 "+-23" 的话，鱼窗口会直接跑到屏幕右下角——
+           鲸鱼默认就待在右下角，表现出来就是「鱼只能放在鲸鱼附近」。
+           所以这里必须夹到 0 以上。
         """
         if self.fish_win is None:
             return
         try:
-            self.fish_win.geometry(f"{FISH_W}x{FISH_H}+{int(x)}+{int(y)}")
+            self.fish_win.geometry(
+                f"{FISH_W}x{FISH_H}+{max(0, int(x))}+{max(0, int(y))}")
         except tk.TclError:
             pass
 
