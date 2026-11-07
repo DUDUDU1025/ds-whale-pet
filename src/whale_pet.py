@@ -608,18 +608,22 @@ def render_frame(t, skin, look=(0.0, 0.0), blink=False, bob=0.0, tilt=0.0,
 
     # ---- 喷水（水柱带弧度，水珠喷出去再被重力拽下来）
     if spout > 0.02:
-        sx, sy = point((12.6, 3.9))
-        h = 46.0 * spout * S
+        # 喷气孔在背部最高点。之前写 (12.6, 3.9) 落在身体右侧的空白处，
+        # 水像是从空气里冒出来的；网格量出来是 (8.8, 3.1)。
+        sx, sy = point((8.8, 3.1))
+        # 头顶到画布顶端只剩 sy 这么多像素，水柱必须夹在里面，
+        # 否则顶部和水珠会被裁掉（之前 h=92 而可用空间只有 59）。
+        h = min(46.0 * spout * S, max(6.0, sy - 10.0))
         col = (196, 230, 250)
 
         layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         ld = ImageDraw.Draw(layer)
 
-        # 水柱：一串小圆叠成水流，越往上越细越淡，带一点弧度（不是一根棍子）
+        # 水柱：一串小圆叠成水流，几乎垂直，只留极轻微的弯（摆动太大会变面条）
         seg = 16
         for i in range(seg):
             u = i / float(seg - 1)                 # 0 = 头顶，1 = 最高点
-            bend = math.sin(u * 1.5) * 12.0 * S * spout
+            bend = math.sin(u * math.pi) * 2.0 * S * spout   # 中间最弯，两头归零
             px_ = sx + bend
             py_ = sy - h * u
             rr = max(1.8, (1.0 - u * 0.38) * S * 3.4 * (0.55 + spout * 0.45))
@@ -627,14 +631,17 @@ def render_frame(t, skin, look=(0.0, 0.0), blink=False, bob=0.0, tilt=0.0,
             ld.ellipse([px_ - rr, py_ - rr, px_ + rr, py_ + rr],
                        fill=col + (alpha,))
 
-        # 顶部水珠：按抛物线飞出去，再用重力拽下来
-        for ang in (-1.00, -0.50, 0.0, 0.50, 1.00):
-            vx = math.sin(ang) * h * 0.40
-            vy = -h * 0.62
+        # 顶部水珠：从水柱顶端主要往**两侧**飞，再被重力拽下来。
+        # 不往上飞了 —— 上方没空间，飞上去只会被画布裁掉。
+        top_x = sx
+        top_y = sy - h
+        for ang in (-1.00, -0.50, 0.50, 1.00):
+            vx = math.sin(ang) * h * 0.55
+            vy = -h * 0.10
             for k in range(3):
-                u = (k + 1) / 3.0 * spout          # 沿轨迹取 3 个位置
-                drop_x = sx + vx * u
-                drop_y = sy + vy * u + 34.0 * u * u * S * 0.5   # 重力项
+                u = (k + 1) / 3.0 * spout             # 沿轨迹取 3 个位置
+                drop_x = top_x + vx * u
+                drop_y = top_y + vy * u + 16.0 * u * u * S * 0.5   # 重力项
                 rr = max(1.6, S * (3.2 - k * 0.7) * spout)
                 a = int(215 * (1.0 - k * 0.28))
                 ld.ellipse([drop_x - rr, drop_y - rr, drop_x + rr, drop_y + rr],
