@@ -400,6 +400,18 @@ AUTO_WAKE_LINES = ["……睡饱了", "唔…我醒了", "（伸懒腰）", "嗯
 DIVE_LINES = ["我下去看看", "去深一点的地方", "潜一下", "下面好安静"]
 SURFACE_LINES = ["上来了", "呼——", "水底下好黑", "我回来了"]
 
+# 饿了两分钟会自己开口催饭。
+# 催 HUNGRY_MAX_ASKS 次还不管它就算了——一直催会烦人。
+HUNGRY_AFTER_SEC = 120.0
+HUNGRY_MAX_ASKS = 3
+HUNGRY_LINES = [
+    "主人 饿饿 想吃鱼鱼",
+    "主人…鱼鱼…",
+    "饿…给我一条嘛",
+    "肚子在叫了（你看）",
+    "鱼鱼…就一条…",
+]
+
 # ================================================================ 官方 logo 曲线
 # 来源：deepseek-harness / packages/client/ui-primitives/src/BrandWordmark.tsx
 #       <g clipPath="url(#dsh-wordmark-whale-clip)"><path d="..."/>
@@ -990,7 +1002,8 @@ class WhalePet:
         self.bubble_text = ""
         # 喂鱼相关的说话触发
         self.last_feed_at = time.time()
-        self._hungry_said = False
+        self._hungry_count = 0          # 这段时间催过几次饭
+        self._hungry_last_at = 0.0      # 上次催饭的时间
         self.feed_streak = 0
         self.next_spout = time.time() + random.uniform(6, 14)
         self.spout_until = 0.0
@@ -1816,7 +1829,8 @@ class WhalePet:
         self._touch(hearts=6, jump=2.4, jumps=2)   # 吃到了，高兴地蹦两下
 
         self.last_feed_at = time.time()
-        self._hungry_said = False
+        self._hungry_count = 0          # 吃到了，催饭计数清零
+        self._hungry_last_at = 0.0
         self.feed_streak += 1
         if self.feed_streak >= 3:
             self.feed_streak = 0
@@ -2114,11 +2128,14 @@ class WhalePet:
             self._tick_n += 1
             return
 
-        # 饿了三分钟会自己开口
-        if (not self._hungry_said and self.fish_mode == "none"
-                and now - self.last_feed_at > 180):
-            self._hungry_said = True
-            self._say("主人 饿饿 想吃鱼鱼", 4.0)
+        # 饿了两分钟会自己开口催饭，催几次就停
+        if (self.fish_mode == "none"
+                and self._hungry_count < HUNGRY_MAX_ASKS
+                and now - self.last_feed_at > HUNGRY_AFTER_SEC
+                and now - self._hungry_last_at > HUNGRY_AFTER_SEC):
+            self._hungry_count += 1
+            self._hungry_last_at = now
+            self._say(random.choice(HUNGRY_LINES), 3.6)
 
         # 气泡
         if now > self.next_bubble and not self.dragging:
