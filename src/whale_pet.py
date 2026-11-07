@@ -175,24 +175,59 @@ DSH_POLL_SEC = 1.0
 
 # ================================================================ 认出你在用哪个 AI
 # 前台窗口标题里出现这些词，就认为你在用它。
-# 顺序有讲究：先匹配更具体的（"deepseek harness" 要在 "deepseek" 之前）。
+# 顺序有讲究：先匹配更具体的（"deepseek harness" 要在 "deepseek" 之前，
+# "marscode" 在 "doubao" 之前），否则短词会把长词吃掉。
 AI_SIGNATURES = [
+    # —— 自己家 ——
     ("deepseek harness", "DSH", "home"),
     ("deepseek", "DeepSeek", "home"),
+    # —— 国外主流 ——
     ("chatgpt", "ChatGPT", "other"),
     ("openai", "ChatGPT", "other"),
     ("claude", "Claude", "other"),
     ("anthropic", "Claude", "other"),
-    ("豆包", "豆包", "other"),
-    ("doubao", "豆包", "other"),
-    ("grok", "Grok", "other"),
     ("gemini", "Gemini", "other"),
-    ("kimi", "Kimi", "other"),
-    ("通义", "通义", "other"),
-    ("tongyi", "通义", "other"),
+    ("bard", "Gemini", "other"),
+    ("grok", "Grok", "other"),
+    ("perplexity", "Perplexity", "other"),
     ("copilot", "Copilot", "other"),
+    ("mistral", "Mistral", "other"),
+    ("le chat", "Mistral", "other"),
+    ("llama", "Llama", "other"),
+    ("poe", "Poe", "other"),
+    # —— 国内主流 ——
+    ("kimi", "Kimi", "other"),
+    ("moonshot", "Kimi", "other"),
+    ("豆包", "豆包", "other"),
+    ("marscode", "豆包", "other"),      # 豆包 MarsCode 要在 doubao 之前
+    ("doubao", "豆包", "other"),
+    ("通义", "通义", "other"),
+    ("千问", "通义", "other"),
+    ("tongyi", "通义", "other"),
+    ("qwen", "通义", "other"),
     ("文心", "文心一言", "other"),
     ("ernie", "文心一言", "other"),
+    ("智谱", "智谱", "other"),
+    ("chatglm", "智谱", "other"),
+    ("zhipu", "智谱", "other"),
+    ("glm", "智谱", "other"),
+    ("混元", "混元", "other"),
+    ("hunyuan", "混元", "other"),
+    ("星火", "星火", "other"),
+    ("讯飞", "星火", "other"),
+    ("spark", "星火", "other"),
+    ("秘塔", "秘塔", "other"),
+    ("metaso", "秘塔", "other"),
+    ("百川", "百川", "other"),
+    ("baichuan", "百川", "other"),
+    ("海螺", "海螺", "other"),
+    ("minimax", "海螺", "other"),
+    # —— AI 编辑器 / 编程 ——
+    ("cursor", "Cursor", "other"),
+    ("windsurf", "Windsurf", "other"),
+    ("trae", "Trae", "other"),
+    ("cline", "Cline", "other"),
+    ("roo code", "Roo Code", "other"),
 ]
 
 # 看到自己家：得意、凑上去。每句都点名，让人知道它认得出来。
@@ -258,6 +293,76 @@ AI_OTHER_LINES = {
         "文心一言…名字挺好听的（不服）",
         "你在用文心啊",
     ],
+    "智谱": [
+        "智谱…GLM 那个",
+        "你在用智谱啊",
+        "智谱的 GLM，听说挺能打",
+    ],
+    "混元": [
+        "混元…腾讯家的",
+        "你在用混元？",
+        "混元也会养宠物吗",
+    ],
+    "星火": [
+        "讯飞星火…它说话好快",
+        "星火啊",
+        "星火的语音比我好（承认）",
+    ],
+    "秘塔": [
+        "秘塔…搜东西很准的那个",
+        "秘塔搜得比我还快（不服）",
+        "你在用秘塔查什么",
+    ],
+    "百川": [
+        "百川…好久没听到这名字了",
+        "百川啊",
+    ],
+    "海螺": [
+        "海螺…名字好听",
+        "你在用海螺？",
+        "海螺是不是很会说话",
+    ],
+    "Perplexity": [
+        "Perplexity…那个会联网搜的",
+        "Perplexity 搜得比我快（小声）",
+        "你问它什么了",
+    ],
+    "Poe": [
+        "Poe…一堆模型挤在一起",
+        "Poe 里是不是有好多 AI",
+        "你别在 Poe 里把我忘了",
+    ],
+    "Cursor": [
+        "Cursor…写代码那个",
+        "你在用 Cursor 啊",
+        "Cursor 比我懂代码（小声）",
+    ],
+    "Windsurf": [
+        "Windsurf…也是写代码的",
+        "你在用 Windsurf？",
+    ],
+    "Trae": [
+        "Trae…字节的？",
+        "Trae 也在写代码吗",
+    ],
+    "Cline": [
+        "Cline…也是写代码的",
+        "你在用 Cline？",
+    ],
+    "Roo Code": [
+        "Roo Code…",
+        "你们写代码的都不带我",
+    ],
+    "Mistral": [
+        "Mistral…欧洲来的",
+        "你在用 Mistral？",
+        "它的名字听着像风",
+    ],
+    "Llama": [
+        "Llama…开源的",
+        "Llama 是不是跑在你电脑上",
+        "开源的我喜欢（小声）",
+    ],
     "*": [
         "这个我不认识…它也是 AI 吗",
         "你在用别的 AI…我是不是要失宠了",
@@ -267,7 +372,8 @@ AI_OTHER_LINES = {
 }
 
 # AI 应用轮询：1 秒看一次（2 秒太慢，切过去半天没反应），
-# 同一个 AI 8 秒内不重复念叨（20 秒太狠，切两次就吞掉一次）
+# 同一个 AI 8 秒内不重复念叨——但冷却按 AI 分别记，
+# 切到另一个 AI 不受影响（见 _react_to_ai）
 AI_POLL_SEC = 1.0
 AI_SAY_COOLDOWN = 8.0
 
@@ -961,7 +1067,7 @@ class WhalePet:
         self.ai_app = None              # 当前检测到的 AI 名字
         self._ai_key = None             # (名字, 窗口句柄)，用来判断"变没变"
         self._ai_next_poll = 0.0
-        self._ai_last_say = 0.0         # 反应冷却
+        self._ai_said = {}              # {AI 名字: 上次说话时间}，按 AI 分别冷却
         self._sulk_until = 0.0          # 吃醋别扭到什么时候
 
         self.root.geometry(f"{WIN}x{WIN}-60-120")
@@ -1228,10 +1334,15 @@ class WhalePet:
         self._react_to_ai(name, found[1], now)
 
     def _react_to_ai(self, name, kind, now):
-        """切到某个 AI 了：自己家就得意，别家就吃醋。"""
-        if now - self._ai_last_say < AI_SAY_COOLDOWN:
+        """切到某个 AI 了：自己家就得意，别家就吃醋。
+
+        冷却按「每个 AI 分别记」——以前是全局一个计时器，
+        在 A 说完话 8 秒内切到 B，B 就被吞掉了，表现就是「醒了但不说」。
+        """
+        last = self._ai_said.get(name, 0.0)
+        if now - last < AI_SAY_COOLDOWN:
             return
-        self._ai_last_say = now
+        self._ai_said[name] = now
 
         if kind == "home":
             # 自己家：骄傲、凑上去
