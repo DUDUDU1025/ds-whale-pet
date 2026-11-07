@@ -173,6 +173,101 @@ ANGRY_LINES = ["你再甩我试试", "我生气了哦", "…讨厌", "不理你�
 # DSH 状态联动的轮询间隔（秒）。读一次约 1.3ms，1 秒一次的开销可以忽略。
 DSH_POLL_SEC = 1.0
 
+# ================================================================ 认出你在用哪个 AI
+# 前台窗口标题里出现这些词，就认为你在用它。
+# 顺序有讲究：先匹配更具体的（"deepseek harness" 要在 "deepseek" 之前）。
+AI_SIGNATURES = [
+    ("deepseek harness", "DSH", "home"),
+    ("deepseek", "DeepSeek", "home"),
+    ("chatgpt", "ChatGPT", "other"),
+    ("openai", "ChatGPT", "other"),
+    ("claude", "Claude", "other"),
+    ("anthropic", "Claude", "other"),
+    ("豆包", "豆包", "other"),
+    ("doubao", "豆包", "other"),
+    ("grok", "Grok", "other"),
+    ("gemini", "Gemini", "other"),
+    ("kimi", "Kimi", "other"),
+    ("通义", "通义", "other"),
+    ("tongyi", "通义", "other"),
+    ("copilot", "Copilot", "other"),
+    ("文心", "文心一言", "other"),
+    ("ernie", "文心一言", "other"),
+]
+
+# 看到自己家：得意、凑上去
+AI_HOME_LINES = [
+    "是我家！",
+    "我们家的界面，好看吧",
+    "（挺胸）",
+    "你看，这才是我家",
+    "在这儿我最有底气",
+    "嗯…还是家里舒服",
+]
+
+# 看到别家：吃醋、扭头
+AI_OTHER_LINES = {
+    "ChatGPT": [
+        "…那个是谁",
+        "它比我聪明吗（小声）",
+        "我也能聊啊",
+        "你怎么跑那儿去了",
+        "它也会陪你吗",
+    ],
+    "Claude": [
+        "又是那个橙色的",
+        "它话好多",
+        "你上次不是说不喜欢它吗",
+        "它写字好看…也就那样吧",
+    ],
+    "豆包": [
+        "豆包…听着就好吃",
+        "那个圆圆的？",
+        "能吃吗（认真）",
+        "它是不是比我圆",
+    ],
+    "Grok": [
+        "那个嘴很毒的",
+        "你别学它说话",
+        "它又说什么了",
+        "我不喜欢它那个语气",
+    ],
+    "Gemini": [
+        "双子那个？",
+        "它也会画图吗",
+        "…两个字的我都记不住",
+    ],
+    "Kimi": [
+        "Kimi…",
+        "它话也挺多的",
+        "你们聊什么了",
+    ],
+    "通义": [
+        "通义…",
+        "阿里家的",
+        "它也养宠物吗",
+    ],
+    "Copilot": [
+        "写代码的那个？",
+        "它帮你写吗",
+        "那…我算什么",
+    ],
+    "文心一言": [
+        "文心…",
+        "名字挺好听的（不服）",
+    ],
+    "*": [
+        "不认识…",
+        "这个也是 AI 吗",
+        "…我是不是要失宠了",
+        "随便你吧（扭头）",
+    ],
+}
+
+# AI 应用轮询：2 秒看一次，切过去 20 秒内不重复念叨
+AI_POLL_SEC = 2.0
+AI_SAY_COOLDOWN = 20.0
+
 # ================================================================ 官方 logo 曲线
 # 来源：deepseek-harness / packages/client/ui-primitives/src/BrandWordmark.tsx
 #       <g clipPath="url(#dsh-wordmark-whale-clip)"><path d="..."/>
@@ -754,13 +849,11 @@ class WhalePet:
         self._last_bounce_say = 0.0      # 撞边台词的节流
         self._say_queue = []             # 待播的台词，避免后一句顶掉前一句
 
-        # DSH 状态联动：它知道 AI 现在在思考还是在跑命令
-        self.dsh_state = "unknown"
-        self.dsh_title = ""
-        self.dsh_step = None
-        self.dsh_pending = []
-        self._dsh_next_poll = 0.0
-        self._dsh_last_say = 0.0      # 状态转换提醒的冷却
+        # 认出你在用哪个 AI：切换时才反应，不跟着它干活的状态做动作
+        self.ai_app = None              # 当前检测到的 AI 名字
+        self._ai_next_poll = 0.0
+        self._ai_last_say = 0.0         # 反应冷却
+        self._sulk_until = 0.0          # 吃醋别扭到什么时候
 
         self.root.geometry(f"{WIN}x{WIN}-60-120")
 
@@ -960,76 +1053,72 @@ class WhalePet:
         else:
             self._say(random.choice(THROW_LINES_LIGHT), 1.8)
 
-    # ---------------------------------------------------------- DSH 状态联动
-    def _dsh_cache_path(self):
-        """DSH 把每个会话的投影缓存成明文 JSON，我们读最近活跃的那个。"""
-        root = os.path.join(os.path.expanduser("~"), ".dsh", "storages",
-                            "session_projcache", "sessions")
-        return root
-
-    def _poll_dsh(self, now):
-        """读一次 DSH 会话状态，判断 AI 现在在干什么。
-
-        状态来自 sessionStats.openStep / pendingCalls：
-          thinking  —— 还没拿到第一个 token（在憋）
-          streaming —— 正在输出
-          tool      —— 有 pendingCalls，在跑工具
-          idle      —— 空闲
-        读一次约 1.3ms，每秒一次的开销可以忽略。
-        """
-        if now < self._dsh_next_poll:
-            return
-        self._dsh_next_poll = now + DSH_POLL_SEC
+    # ---------------------------------------------------------- 认出你在用哪个 AI
+    def _detect_ai_app(self):
+        """看前台窗口是不是某个 AI 工具。返回 (名字, home/other) 或 None。"""
+        if not HAS_WIN32:
+            return None
         try:
-            files = glob.glob(os.path.join(self._dsh_cache_path(), "*.json"))
-            if not files:
-                self.dsh_state = "unknown"
-                return
-            path = max(files, key=os.path.getmtime)
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            rows = data.get("record", {}).get("rows", {})
-
-            def cell(key):
-                c = rows.get(key)
-                return c.get("val") if isinstance(c, dict) else None
-
-            stats = cell("sessionStats") or {}
-            title = cell("title")
-            open_step = stats.get("openStep")
-            pending = stats.get("pendingCalls") or {}
-            now_ms = now * 1000.0
-
-            old_state = self.dsh_state
-            if pending:
-                state = "tool"
-            elif open_step:
-                started = open_step.get("startTime") or 0
-                first = open_step.get("firstTokenTime")
-                if first is None:
-                    state = "thinking" if (now_ms - started) < 180000 else "stalled"
-                else:
-                    state = "streaming" if (now_ms - first) < 30000 else "idle"
-            else:
-                state = "idle"
-
-            self.dsh_state = state
-            self.dsh_title = title or ""
-            self.dsh_step = (open_step or {}).get("step")
-            self.dsh_pending = list(pending.keys())[:3]
-
-            # 空闲→思考/工具 的转换提醒一次（只在真的切换时说，且带冷却）
-            if old_state != state and state in ("thinking", "tool"):
-                if (old_state in ("idle", "unknown")
-                        and now - self._dsh_last_say > 90.0
-                        and random.random() < 0.5):
-                    self._dsh_last_say = now
-                    if state == "tool":
-                        self._say(random.choice(["开始干活了", "嗯…我看看", "查一下"]), 1.8)
-                    else:
-                        self._say(random.choice(["在想…", "唔…", "让我想想"]), 1.6)
+            u = ctypes.windll.user32
+            hwnd = u.GetForegroundWindow()
+            if not hwnd:
+                return None
+            buf = ctypes.create_unicode_buffer(512)
+            u.GetWindowTextW(hwnd, buf, 512)
+            title = buf.value or ""
+            if not title:
+                return None
+            low = title.lower()
+            for needle, name, kind in AI_SIGNATURES:
+                if needle in low or needle in title:
+                    return (name, kind)
         except Exception:
-            self.dsh_state = "unknown"
+            pass
+        return None
+
+    def _poll_ai_app(self, now):
+        """每隔几秒看一眼前台有没有切到别的 AI，切了就反应一下。
+
+        只在**换到另一个 AI** 的时候说一次，不跟着它干活的状态做动作：
+        睡觉、拖动、喂鱼的时候一律不检测，免得打断。
+        """
+        if now < self._ai_next_poll:
+            return
+        self._ai_next_poll = now + AI_POLL_SEC
+
+        # 睡着 / 被拖 / 在喂鱼：不检测，也不反应
+        if self.dragging or self.fish_mode != "none":
+            return
+        if now - self.last_action > 25:
+            return
+
+        found = self._detect_ai_app()
+        name = found[0] if found else None
+        if name == self.ai_app:
+            return
+
+        old = self.ai_app
+        self.ai_app = name
+        if name and name != old:
+            self._react_to_ai(name, found[1], now)
+
+    def _react_to_ai(self, name, kind, now):
+        """切到某个 AI 了：自己家就得意，别家就吃醋。"""
+        if now - self._ai_last_say < AI_SAY_COOLDOWN:
+            return
+        self._ai_last_say = now
+
+        if kind == "home":
+            # 自己家：骄傲、凑上去
+            self._touch(hearts=3, jump=2.2)
+            self.tilt = 0.0
+            self._say(random.choice(AI_HOME_LINES), 2.8)
+        else:
+            # 别家：扭头、斜眼、吃醋
+            lines = AI_OTHER_LINES.get(name) or AI_OTHER_LINES["*"]
+            self._say(random.choice(lines), 2.8)
+            self.tilt = -0.45
+            self._sulk_until = now + 3.0     # 别扭一会儿
 
     def _virtual_screen(self):
         """整个虚拟桌面的范围（跨多显示器时的外接矩形）。"""
@@ -1718,32 +1807,22 @@ class WhalePet:
         self._maybe_start_gesture(now, sleepy)
         g_squash, g_tail, g_look, g_blink = self._gesture_state(now)
 
-        # DSH 状态联动：AI 在忙什么，它的眼睛就往哪边瞟
-        self._poll_dsh(now)
-        dsh_look = None
-        if not self.dragging and self.hover < 0.3 and self.fish_mode == "none":
-            if self.dsh_state == "thinking":
-                # 在想事情：眼睛往上瞟，慢慢左右扫
-                dsh_look = (math.sin(now * 0.6) * 0.5, -0.6)
-            elif self.dsh_state == "streaming":
-                # 正在输出：平视，轻微游移
-                dsh_look = (math.sin(now * 0.9) * 0.25, 0.05)
-            elif self.dsh_state == "tool":
-                # 在跑工具：盯着看，小幅左右扫
-                dsh_look = (math.sin(now * 1.6) * 0.3, 0.15)
-            elif self.dsh_state == "stalled":
-                # 卡住了：有点不安
-                dsh_look = (0.0, -0.25)
+        # 看一眼前台是不是换了 AI（只在切换时反应一次）
+        self._poll_ai_app(now)
+
+        # 吃醋的时候扭头不看，别扭几秒
+        if now < self._sulk_until:
+            self.tilt = -0.45
+            if self.hover < 0.3:
+                self.look = (-0.85, -0.15)
 
         # 爱心的存续也会影响表情
         mood = "happy" if self.hearts else "idle"
 
-        # 视线优先级：鼠标 > 小动作 > DSH 状态
+        # 视线优先级：鼠标 > 小动作
         look = self.look
         if g_look is not None:
             look = (self.look[0] + g_look[0], self.look[1] + g_look[1])
-        if dsh_look is not None:
-            look = (look[0] + dsh_look[0], look[1] + dsh_look[1])
         look = (clamp(look[0], -1.0, 1.0), clamp(look[1], -1.0, 1.0))
         if g_blink:
             blink = True
