@@ -65,7 +65,8 @@ python src/whale_pet.py --preview
 
 | 文件 | 内容 |
 |---|---|
-| [docs/MANUAL.md](docs/MANUAL.md) | 说明书。前半部分讲怎么玩（交互、喂鱼、好感度、说话规则、配置），后半部分讲怎么实现的（渲染管线、代码结构、踩过的五个坑） |
+| [docs/GUIDE.md](docs/GUIDE.md) | **新手向导**。从装 Python 开始，一步步到能跑起来。不需要懂编程 |
+| [docs/MANUAL.md](docs/MANUAL.md) | **完整手册**。前半部分讲怎么玩（交互、喂鱼、好感度、说话规则、配置），后半部分讲怎么实现的（渲染管线、代码结构、踩过的五个坑） |
 | [docs/DISCLAIMER.md](docs/DISCLAIMER.md) | 免责声明：商标、图形版权、隐私、担保 |
 | [LICENSE](LICENSE) | MIT |
 
